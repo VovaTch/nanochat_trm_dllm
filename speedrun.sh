@@ -19,7 +19,7 @@ mkdir -p $NANOCHAT_BASE_DIR
 # Python venv setup with uv
 
 # install uv (if not already installed)
-command -v uv &> /dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
+command -v uv &>/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
 # create a .venv local virtual environment (if it doesn't exist)
 [ -d ".venv" ] || uv venv
 # install the repo dependencies
@@ -35,8 +35,8 @@ source .venv/bin/activate
 # 2) Set the WANDB_RUN environment variable when running this script, e.g.:
 #    `WANDB_RUN=d26 bash speedrun.sh`
 if [ -z "$WANDB_RUN" ]; then
-    # by default use "dummy" : it's handled as a special case, skips logging to wandb
-    WANDB_RUN=dummy
+  # by default use "dummy" : it's handled as a special case, skips logging to wandb
+  WANDB_RUN=dummy
 fi
 
 # -----------------------------------------------------------------------------
@@ -83,7 +83,7 @@ echo "Waiting for dataset download to complete..."
 wait $DATASET_DOWNLOAD_PID
 
 # Number of processes/GPUs to use
-NPROC_PER_NODE=8
+NPROC_PER_NODE=1
 
 # pretrain the d20 model
 torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- --depth=20 --run=$WANDB_RUN

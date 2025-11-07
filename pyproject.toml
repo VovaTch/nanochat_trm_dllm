@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "datasets>=4.0.0",
+    "dotenv>=0.9.9",
     "fastapi>=0.117.1",
     "files-to-prompt>=0.6",
     "psutil>=7.1.0",
