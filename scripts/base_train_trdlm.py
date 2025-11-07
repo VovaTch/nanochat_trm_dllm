@@ -379,10 +379,10 @@ for step in range(num_iterations + 1):
         for x_ind, y_ind, z_ind, mask, target in zip(
             accum_x, accum_y_inner, accum_z_inner, accum_x_mask, accum_target
         ):
-            with autocast_ctx:
-                y_ind, z_int, output, q_stop = model.deep_recursion(x_ind, y_ind, z_ind)
-                loss = model.get_loss(output, q_stop, mask, target)
-            train_loss = loss.detach()
+            # with autocast_ctx:
+            y_ind, z_int, output, q_stop = model.deep_recursion(x_ind, y_ind, z_ind)
+            loss = model.get_loss(output, q_stop, mask, target)
+            train_loss = loss.clone().detach()
             loss /= grad_accum_steps
             loss.backward()
 

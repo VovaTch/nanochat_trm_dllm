@@ -304,10 +304,11 @@ class TRDLM(nn.Module):
         self, input: torch.Tensor, output: torch.Tensor, latent: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         input = self._input_embedding(input)
-        for _ in range(self._config.y_loop - 1):
-            output, latent = self.latent_recursion(input, output, latent)
-        output = output.detach()
-        latent = latent.detach()
+        with torch.no_grad():
+            for _ in range(self._config.y_loop - 1):
+                output, latent = self.latent_recursion(input, output, latent)
+        # output = output.detach()
+        # latent = latent.detach()
         output, latent = self.latent_recursion(input, output, latent)
         logits = self._output_head(output)
         q_stop = self._q_output_head(output)
