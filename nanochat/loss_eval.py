@@ -5,6 +5,7 @@ A number of functions that help with evaluating a base model.
 import math
 import torch
 import torch.distributed as dist
+import random
 
 from nanochat.trm_dllm import TRDLM
 
@@ -70,7 +71,13 @@ def evaluate_bpb(model, batches, steps, token_bytes):
 
 
 @torch.no_grad()
-def evaluate_trdlm_loss(model: TRDLM, batches, steps, token_bytes):
+def evaluate_trdlm_loss_bpb(
+    model: TRDLM,
+    batches,
+    steps: int,
+    token_bytes: torch.Tensor,
+    vocab_size: int = 65536,
+):
     """
     Instead of the naive 'mean loss', this function returns the bits per byte (bpb),
     which is a tokenization vocab size-indepedent metric, meaning you are still comparing
@@ -93,9 +100,20 @@ def evaluate_trdlm_loss(model: TRDLM, batches, steps, token_bytes):
     total_bytes = torch.tensor(0, dtype=torch.int64, device=model.get_device())
     batch_iter = iter(batches)
     for _ in range(steps):
-        x, y = next(batch_iter)
-        loss2d = model(x, y, loss_reduction="none")  # (B, T)
-        loss2d = loss2d.view(-1)  # flatten
+        x, _ = next(batch_iter)
+
+        ber = torch.ones_like(x) * random.random()
+        ber_dist = torch.distributions.Bernoulli(ber)
+        mask = ber_dist.sample().to(dtype=torch.bool)
+        y = x.clone()
+        x[~mask] = vocab_size
+
+        output, q_stop = model.forward(x, None, None)
+        loss2d_masked = model.get_loss(output, q_stop, mask, y, reduction="none")
+        loss2d = torch.zeros((x.shape[0], x.shape[1]), device=model.get_device())
+        loss2d[~mask] = loss2d_masked
+        loss2d = loss2d.view(-1)
+
         y = y.view(-1)  # flatten
         if (
             y.int() < 0

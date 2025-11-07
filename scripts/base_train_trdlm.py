@@ -13,6 +13,7 @@ python -m scripts.base_train --depth=4 --max_seq_len=512 --device_batch_size=1 -
 
 import os
 from typing import Generator
+import random
 
 from nanochat.trm_dllm import TRDLM, TRDLMConfig
 
@@ -35,7 +36,7 @@ from nanochat.common import (
 )
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
 from nanochat.checkpoint_manager import save_checkpoint
-from nanochat.loss_eval import evaluate_bpb
+from nanochat.loss_eval import evaluate_trdlm_loss_bpb
 from nanochat.engine import Engine
 from scripts.base_eval import evaluate_model
 from nanochat.report import get_report
@@ -63,8 +64,8 @@ target_flops = (
 )  # calculate num_iterations to reach target_flops. Useful for scaling laws experiments (-1 = disable)
 target_param_data_ratio = 20  # calculate num_iterations to maintain fixed data:param ratio (Chinchilla=20) (-1 = disable)
 # Optimization
-device_batch_size = 32  # per-device batch size (set to not OOM)
-total_batch_size = 524288  # total desired batch size, in #tokens
+device_batch_size = 2  # per-device batch size (set to not OOM)
+total_batch_size = 65536  # total desired batch size, in #tokens
 embedding_lr = 0.2  # learning rate for the embedding parameters (Adam)
 unembedding_lr = 0.004  # learning rate for the unembedding parameters (Adam)
 weight_decay = 0.0  # weight decay for the embedding/unembedding parameters (Adam)
@@ -259,9 +260,12 @@ for step in range(num_iterations + 1):
     if last_step or step % eval_every == 0:
         model.eval()  # type: ignore
         val_loader = build_val_loader()
-        eval_steps = eval_tokens // (device_batch_size * max_seq_len * ddp_world_size)
+        # eval_steps = eval_tokens // (device_batch_size * max_seq_len * ddp_world_size)
+        eval_steps = 8
         with autocast_ctx:
-            val_bpb = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
+            val_bpb = evaluate_trdlm_loss_bpb(
+                model, val_loader, eval_steps, token_bytes
+            )
         print0(f"Step {step:05d} | Validation bpb: {val_bpb:.4f}")
         if val_bpb < min_val_bpb:
             min_val_bpb = val_bpb
@@ -362,9 +366,9 @@ for step in range(num_iterations + 1):
             model.z_init.repeat((x.shape[0], x.shape[1], 1)).to(x.device)
         )
 
-        mask_ber = torch.ones_like(x) * torch.rand()
+        mask_ber = torch.ones_like(x) * random.random()
         ber_dist = torch.distributions.Bernoulli(mask_ber)
-        mask = ber_dist.sample()
+        mask = ber_dist.sample().to(dtype=torch.bool)
         accum_x_mask.append(mask)
         x[~mask] = vocab_size
         accum_x.append(x)
@@ -377,7 +381,7 @@ for step in range(num_iterations + 1):
         ):
             with autocast_ctx:
                 y_ind, z_int, output, q_stop = model.deep_recursion(x_ind, y_ind, z_ind)
-                loss = model.get_loss(output, q_stop, target, mask)
+                loss = model.get_loss(output, q_stop, mask, target)
             train_loss = loss.detach()
             loss /= grad_accum_steps
             loss.backward()

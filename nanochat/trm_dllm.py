@@ -113,7 +113,9 @@ class DiffusionTransformerCore(nn.Module):
             torch.nn.init.zeros_(block.attn.c_proj.weight)  # type: ignore
         # init the rotary embeddings
         head_dim = self._config.n_embd // self._config.n_head
-        cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, head_dim)
+        cos, sin = self._precompute_rotary_embeddings(
+            self.rotary_seq_len, head_dim, device="cpu"
+        )
         self.cos, self.sin = cos, sin
 
     def _init_weights(self, module: nn.Module) -> None:
@@ -218,7 +220,7 @@ class TRDLM(nn.Module):
     def init_weights(self) -> None:
         self._core.init_weights()
         torch.nn.init.zeros_(self._output_head.weight)
-        if self._input_embedding.device.type == "cuda":
+        if self._input_embedding._embedding.weight.device.type == "cuda":
             self._input_embedding.to(dtype=torch.bfloat16)
 
     @property
@@ -230,11 +232,11 @@ class TRDLM(nn.Module):
         return self._core.z_init
 
     def get_device(self) -> str:
-        return str(self._input_embedding.device.type)
+        return str(self._input_embedding._embedding.weight.device.type)
 
     def estimate_flops(self) -> int:
         nparams = sum(p.numel() for p in self.parameters())
-        nparams_embedding = self._input_embedding.weight.numel()  # type: ignore
+        nparams_embedding = self._input_embedding._embedding.weight.numel()
         len, h, q, t = (
             self._config.n_layer,
             self._config.n_head,
@@ -260,9 +262,10 @@ class TRDLM(nn.Module):
         matrix_params = list(self._core._transformers.parameters())
         embedding_params = list(self._input_embedding.parameters())
         lm_head_params = list(self._output_head.parameters())
+        q_output_head_params = list(self._q_output_head.parameters())
         assert len(list(self.parameters())) == len(matrix_params) + len(
             embedding_params
-        ) + len(lm_head_params)
+        ) + len(lm_head_params) + len(q_output_head_params)
         # Create the AdamW optimizer for the embedding and lm_head
         # Scale the LR for the AdamW parameters by ∝1/√dmodel (having tuned the LRs for 768 dim model)
         dmodel_lr_scale = (model_dim / 768) ** -0.5
@@ -273,6 +276,7 @@ class TRDLM(nn.Module):
         adam_groups = [
             dict(params=lm_head_params, lr=unembedding_lr * dmodel_lr_scale),
             dict(params=embedding_params, lr=embedding_lr * dmodel_lr_scale),
+            dict(params=q_output_head_params, lr=unembedding_lr * dmodel_lr_scale),
         ]
         adamw_kwargs = dict(betas=(0.8, 0.95), eps=1e-10, weight_decay=weight_decay)
         AdamWFactory = DistAdamW if ddp else partial(torch.optim.AdamW, fused=True)
@@ -300,15 +304,18 @@ class TRDLM(nn.Module):
         self, input: torch.Tensor, output: torch.Tensor, latent: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         input = self._input_embedding(input)
-        with torch.no_grad():
-            for _ in range(self._config.y_loop - 1):
-                output, latent = self.latent_recursion(input, output, latent)
+        for _ in range(self._config.y_loop - 1):
+            output, latent = self.latent_recursion(input, output, latent)
+        output = output.detach()
+        latent = latent.detach()
         output, latent = self.latent_recursion(input, output, latent)
+        logits = self._output_head(output)
+        q_stop = self._q_output_head(output)
         return (
             output.detach(),
             latent.detach(),
-            self._output_head(output),
-            self._q_output_head(output),
+            logits,
+            q_stop,
         )
 
     def forward(
@@ -318,9 +325,13 @@ class TRDLM(nn.Module):
         z: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if y is None:
-            y = self._core.y_init.repeat((1, x.shape[1], 1)).to(self.get_device())
+            y = self._core.y_init.repeat((x.shape[0], x.shape[1], 1)).to(
+                self.get_device()
+            )
         if z is None:
-            z = self._core.z_init.repeat((1, x.shape[1], 1)).to(self.get_device())
+            z = self._core.z_init.repeat((x.shape[0], x.shape[1], 1)).to(
+                self.get_device()
+            )
 
         _, _, output, latents = self.deep_recursion(x, y, z)
         return output, latents
@@ -331,14 +342,24 @@ class TRDLM(nn.Module):
         q_stop: torch.Tensor,
         mask: torch.Tensor,
         target: torch.Tensor,
+        reduction: str = "mean",
     ) -> torch.Tensor:
 
-        loss_cls = F.cross_entropy(output[~mask].permute(0, 2, 1), target[~mask])
-        q_stop_target = torch.all(
-            torch.argmax(output[~mask].permute(0, 2, 1), dim=1) == target[~mask],
-            dim=1,
+        loss_cls = F.cross_entropy(
+            output[~mask], target[~mask].long(), reduction=reduction
         )
-        loss_q = F.binary_cross_entropy(
-            q_stop.squeeze(), q_stop_target.float().squeeze()
-        )
+        q_target_collector = []
+        for i in range(output.shape[0]):
+
+            q_stop_target_ind = torch.all(
+                torch.argmax(output[i][~mask[i]], dim=1) == target[i][~mask[i]]
+            )
+            q_target_collector.append(q_stop_target_ind)
+
+        q_stop_target = torch.stack(q_target_collector)
+        loss_q = F.binary_cross_entropy_with_logits(
+            q_stop.squeeze(),
+            q_stop_target.float().squeeze(),
+            reduction=reduction if reduction != "none" else "mean",
+        )  # TODO: incorrect, but should work
         return loss_cls + loss_q
