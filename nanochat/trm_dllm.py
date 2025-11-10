@@ -231,6 +231,10 @@ class TRDLM(nn.Module):
     def z_init(self) -> torch.Tensor:
         return self._core.z_init
 
+    @property
+    def config(self) -> TRDLMConfig:
+        return self._config
+
     def get_device(self) -> str:
         return str(self._input_embedding._embedding.weight.device.type)
 
@@ -334,8 +338,8 @@ class TRDLM(nn.Module):
                 self.get_device()
             )
 
-        _, _, output, latents = self.deep_recursion(x, y, z)
-        return output, latents
+        _, _, output, q_stop = self.deep_recursion(x, y, z)
+        return output, q_stop
 
     @staticmethod
     def get_loss(

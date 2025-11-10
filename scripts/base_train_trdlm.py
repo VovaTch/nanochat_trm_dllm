@@ -76,7 +76,7 @@ warmdown_ratio = 0.2  # ratio of iterations for LR warmdown
 final_lr_frac = 0.0  # final LR is this fraction of the initial LR
 
 # Evaluation
-eval_every = 250  # every how many steps to evaluate the model for val bpb
+eval_every = 2  # every how many steps to evaluate the model for val bpb
 eval_tokens = 20 * 524288  # number of tokens to evaluate val loss on
 core_metric_every = (
     2000  # every how many steps to evaluate the core metric (-1 = disable)
@@ -226,7 +226,7 @@ x, y = next(train_loader)  # kick off load of the very first batch of data
 
 
 # Learning rate scheduler
-def get_lr_multiplier(it):
+def get_lr_multiplier(it: int) -> float:
     warmup_iters = round(warmup_ratio * num_iterations)
     warmdown_iters = round(warmdown_ratio * num_iterations)
     if it < warmup_iters:
@@ -239,7 +239,7 @@ def get_lr_multiplier(it):
 
 
 # Momentum scheduler for Muon optimizer
-def get_muon_momentum(it):
+def get_muon_momentum(it: int) -> float:
     frac = min(it / 300, 1)
     momentum = (1 - frac) * 0.85 + frac * 0.95
     return momentum
@@ -261,7 +261,7 @@ for step in range(num_iterations + 1):
         model.eval()  # type: ignore
         val_loader = build_val_loader()
         # eval_steps = eval_tokens // (device_batch_size * max_seq_len * ddp_world_size)
-        eval_steps = 8
+        eval_steps = 128
         with autocast_ctx:
             val_bpb = evaluate_trdlm_loss_bpb(
                 model, val_loader, eval_steps, token_bytes
