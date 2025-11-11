@@ -1,12 +1,21 @@
 from dataclasses import dataclass, field
 import math
-from typing import Sequence
+from typing import Iterator, Protocol, Sequence
 
 import torch
 import torch.nn.functional as F
 
 from nanochat.tokenizer import RustBPETokenizer
 from nanochat.trm_dllm import TRDLM
+
+
+class SampleScheduler(Protocol):
+    def get_mask(
+        self, step_idx: int, mask: Sequence[bool], logits: torch.Tensor | None = None
+    ) -> list[bool]: ...
+
+    @property
+    def steps(sellf) -> int: ...
 
 
 @torch.inference_mode()
@@ -78,7 +87,7 @@ class TrdlmEngine:
         self,
         model: TRDLM,
         tokenizer: RustBPETokenizer,
-        scheduler,
+        scheduler: SampleScheduler,
         max_seq_len: int = 1024,
     ) -> None:
         self.model = model
@@ -96,7 +105,7 @@ class TrdlmEngine:
         temperature: float = 1.0,
         top_k: int | None = None,
         seed: int = 42,
-    ) -> torch.Tensor:
+    ) -> Iterator[tuple[list[int], list[int]]]:
         device = self.model.get_device()
         rng = torch.Generator(device=device)
         rng.manual_seed(seed)
@@ -113,16 +122,58 @@ class TrdlmEngine:
         max_seq_len = self.model.config.sequence_len
         init_len = len(tokens)
         vocab_size = self.model.config.vocab_size
-        mask = [False] * max_seq_len
+        mask = [True] * init_len + [False] * (max_seq_len - init_len)
 
         current_sequence = list(tokens) + [vocab_size] * (len(tokens) - max_seq_len)
+        current_sequence = torch.tensor(current_sequence).to(device)
 
         y = self.model.y_init.repeat((1, max_seq_len, 1)).to(device)
         z = self.model.z_init.repeat((1, max_seq_len, 1)).to(device)
 
-        for step_idx in range(self.scheduler.steps):
-            mask = self.scheduler.get_mask(step_idx, mask)
-            current_sequence[~mask] = vocab_size
-            y, z, output_logits, q_stop = self.model.deep_recursion(
-                torch.tensor(current_sequence).to(device), y, z
+        row_states = [
+            SeqState(
+                current_tokens=current_sequence.tolist(),
+                current_mask=mask,
+                current_step=0,
+                in_python_block=False,
+                completed=False,
             )
+        ]
+
+        for step_idx in range(self.scheduler.steps):
+            if step_idx > 0:
+                mask = self.scheduler.get_mask(step_idx, mask, current_sequence)
+                mask = [True] * init_len + mask[init_len:max_seq_len]
+            mask_tensor = torch.tensor(mask).to(device)
+            current_sequence[~mask_tensor] = vocab_size
+            y, z, output_logits, q_stop = self.model.deep_recursion(
+                current_sequence.unsqueeze(0), y, z
+            )
+
+            current_sequence = sample_sequence(
+                current_sequence,
+                output_logits,
+                mask=mask_tensor,
+                rng=rng,
+                temperature=temperature,
+                top_k=top_k,
+            )
+
+            row_states.append(
+                SeqState(
+                    current_tokens=current_sequence.tolist(),
+                    current_mask=mask,
+                    current_step=step_idx + 1,
+                    completed=True if step_idx == self.scheduler.steps - 1 else False,
+                )
+            )
+
+            yield current_sequence.tolist(), torch.tensor(mask).to(
+                dtype=torch.int
+            ).tolist()
+
+            if torch.all(q_stop > 0):
+                break
+
+            if (~mask_tensor).sum() == 0:
+                break
