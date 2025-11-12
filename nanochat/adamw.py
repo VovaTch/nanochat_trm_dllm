@@ -28,6 +28,7 @@ class DistAdamW(torch.optim.Optimizer):
             params: list[Tensor] = group["params"]
             for base_i in range(len(params)):
                 grad = params[base_i].grad
+                print(f"grad shape: {grad.shape[0]}, world size {world_size}")
                 rank_size = grad.shape[0] // world_size
                 grad_slice = torch.empty_like(grad[:rank_size])
                 reduce_scatter_futures.append(dist.reduce_scatter_tensor(grad_slice, grad, op=dist.ReduceOp.AVG, async_op=True).get_future())

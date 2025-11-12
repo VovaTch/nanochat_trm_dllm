@@ -24,6 +24,8 @@ from contextlib import nullcontext
 import wandb
 import torch
 
+import torch.distributed as dist
+
 from nanochat.dataloader import tokenizing_distributed_data_loader
 from nanochat.common import (
     compute_init,
@@ -64,8 +66,8 @@ target_flops = (
 )  # calculate num_iterations to reach target_flops. Useful for scaling laws experiments (-1 = disable)
 target_param_data_ratio = 20  # calculate num_iterations to maintain fixed data:param ratio (Chinchilla=20) (-1 = disable)
 # Optimization
-device_batch_size = 2  # per-device batch size (set to not OOM)
-total_batch_size = 65536  # total desired batch size, in #tokens
+device_batch_size = 8  # per-device batch size (set to not OOM)
+total_batch_size = 65536 * 2  # total desired batch size, in #tokens
 embedding_lr = 0.2  # learning rate for the embedding parameters (Adam)
 unembedding_lr = 0.004  # learning rate for the unembedding parameters (Adam)
 weight_decay = 0.0  # weight decay for the embedding/unembedding parameters (Adam)
@@ -397,6 +399,7 @@ for step in range(num_iterations + 1):
         muon_momentum = get_muon_momentum(step)
         for group in muon_optimizer.param_groups:
             group["momentum"] = muon_momentum
+        dist.barrier()
         for opt in optimizers:
             opt.step()
         model.zero_grad(set_to_none=True)

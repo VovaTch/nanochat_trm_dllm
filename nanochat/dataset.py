@@ -10,6 +10,7 @@ For details of how the dataset was prepared, see `repackage_data_reference.py`.
 import os
 import argparse
 import time
+from typing import Iterator, Literal
 import requests
 import pyarrow.parquet as pq
 from multiprocessing import Pool
@@ -53,7 +54,9 @@ def list_parquet_files(data_dir=None):
     return parquet_paths
 
 
-def parquets_iter_batched(split, start=0, step=1):
+def parquets_iter_batched(
+    split: Literal["train", "val"], start: int = 0, step: int = 1
+) -> Iterator[str]:
     """
     Iterate through the dataset, in batches of underlying row_groups for efficiency.
     - split can be "train" or "val". the last parquet file will be val.
@@ -71,7 +74,7 @@ def parquets_iter_batched(split, start=0, step=1):
 
 
 # -----------------------------------------------------------------------------
-def download_single_file(index):
+def download_single_file(index: int) -> bool:
     """Downloads a single file index, with some backoff"""
 
     # Construct the local filepath for this file and skip if it already exists
