@@ -47,7 +47,7 @@ def eval_with_timeout(formula, max_time=3):
         return None
 
 
-def use_calculator(expr):
+def use_calculator(expr: str):
     """
     Evaluate a Python expression safely.
     Supports both math expressions and string operations like .count()

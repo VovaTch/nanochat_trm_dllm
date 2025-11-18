@@ -15,7 +15,9 @@ import os
 from typing import Generator
 import random
 
+from nanochat.sample_scheduler import LinearSampleScheduler
 from nanochat.trm_dllm import TRDLM, TRDLMConfig
+from nanochat.trm_dllm_engine import TrdlmEngine
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import time
@@ -253,6 +255,7 @@ min_val_bpb = float("inf")
 smooth_train_loss = 0  # EMA of training loss
 ema_beta = 0.9  # EMA decay factor
 total_training_time = 0  # total wall-clock time of training
+sample_scheduler = LinearSampleScheduler(supervision_steps)
 # note that we run +1 steps only so that we can eval and save at the end
 for step in range(num_iterations + 1):
     last_step = step == num_iterations
@@ -316,7 +319,9 @@ for step in range(num_iterations + 1):
             "My favorite color is",
             "If 5*x + 3 = 13, then x is",
         ]
-        engine = Engine(orig_model, tokenizer)  # use orig_model to avoid recompilation
+        engine = TrdlmEngine(
+            orig_model, tokenizer, scheduler=sample_scheduler, max_seq_len=max_seq_len
+        )  # use orig_model to avoid recompilation
         for prompt in prompts:
             tokens = tokenizer(prompt, prepend="<|bos|>")
             with autocast_ctx:

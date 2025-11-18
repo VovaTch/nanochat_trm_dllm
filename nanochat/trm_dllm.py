@@ -183,7 +183,7 @@ class InputEmbedding(nn.Module):
         super().__init__()
         self._embedding_dim = embedding_dim
         self._vocab_size = vocab_size
-        self._embedding = nn.Embedding(vocab_size + 1, embedding_dim)
+        self._embedding = nn.Embedding(vocab_size + 2, embedding_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self._embedding(x)
@@ -196,15 +196,14 @@ class LinearQOutputHead(nn.Module):
         self._seq_length = seq_length
 
         layers = []
-        layers.append(nn.Linear(hidden_dim, 1))
-        layers.append(nn.Linear(seq_length, 1))
+        layers.append(nn.Linear(hidden_dim, 8))
 
         self._layers = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self._layers[0](x)
         x = x.view(x.shape[0], -1)
-        return self._layers[1](x)
+        return x.sum(dim=1, keepdim=True)
 
 
 # TRDLM model; trying Karpathy's interface for plug and playing in this repo
