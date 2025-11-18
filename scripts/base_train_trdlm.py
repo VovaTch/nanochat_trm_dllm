@@ -80,7 +80,7 @@ warmdown_ratio = 0.2  # ratio of iterations for LR warmdown
 final_lr_frac = 0.0  # final LR is this fraction of the initial LR
 
 # Evaluation
-eval_every = 2  # every how many steps to evaluate the model for val bpb
+eval_every = 256  # every how many steps to evaluate the model for val bpb
 eval_tokens = 20 * 524288  # number of tokens to evaluate val loss on
 core_metric_every = (
     2000  # every how many steps to evaluate the core metric (-1 = disable)
@@ -308,6 +308,7 @@ for step in range(num_iterations + 1):
 
     # once in a while: sample from the model (only on master process)
     # use the original uncompiled model because the inputs keep changing shape
+    # print0(f"Master process? {master_process}, step {step}")
     if master_process and (last_step or (step > 0 and step % sample_every == 0)):
         model.eval()  # type: ignore
         prompts = [
@@ -332,7 +333,7 @@ for step in range(num_iterations + 1):
         model.train()  # type: ignore
 
     # save checkpoint at the end of the run (only on master process)
-    if master_process and last_step:
+    if master_process and (last_step or step % eval_every == 0):
         output_dirname = model_tag if model_tag else "TRDLM"
         checkpoint_dir = os.path.join(base_dir, "base_checkpoints", output_dirname)
         save_checkpoint(

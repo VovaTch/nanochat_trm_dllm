@@ -37,6 +37,8 @@ class DistAdamW(torch.optim.Optimizer):
             params: list[Tensor] = group["params"]
             for base_i in range(len(params)):
                 grad = params[base_i].grad
+                if grad is None:
+                    continue
                 rank_size = grad.shape[0] // world_size
                 grad_slice = torch.empty_like(grad[:rank_size])
                 reduce_scatter_futures.append(
