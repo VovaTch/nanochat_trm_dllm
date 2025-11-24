@@ -5,3 +5,6 @@ rustbpe/target/
 dev-ignore/
 report.md
 eval_bundle/
+
+# Tensorboard 
+runs/

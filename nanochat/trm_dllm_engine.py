@@ -98,13 +98,14 @@ class TrdlmEngine:
     def _get_special_token(self, s: str) -> int:
         return self.tokenizer.encode_special(s)
 
-    @torch.inference_mode()
+    @torch.inference_mode()  # TODO: everything in the generate part is wrong
     def generate(
         self,
         tokens: Sequence[int],
         temperature: float = 1.0,
         top_k: int | None = None,
         seed: int = 42,
+        **kwargs,
     ) -> Iterator[tuple[list[int], list[int]]]:
         device = self.model.get_device()
         rng = torch.Generator(device=device)
@@ -126,6 +127,17 @@ class TrdlmEngine:
 
         current_sequence = list(tokens) + [vocab_size] * (len(tokens) - max_seq_len)
         current_sequence = torch.tensor(current_sequence).to(device)
+        current_sequence = (
+            torch.cat(
+                [
+                    current_sequence,
+                    torch.ones(max_seq_len - len(current_sequence)).to(device)
+                    * vocab_size,
+                ]
+            )
+            .to(dtype=torch.long)
+            .unsqueeze(0)
+        )
 
         y = self.model.y_init.repeat((1, max_seq_len, 1)).to(device)
         z = self.model.z_init.repeat((1, max_seq_len, 1)).to(device)
@@ -141,13 +153,19 @@ class TrdlmEngine:
         ]
 
         for step_idx in range(self.scheduler.steps):
-            if step_idx > 0:
-                mask = self.scheduler.get_mask(step_idx, mask, current_sequence)
-                mask = [True] * init_len + mask[init_len:max_seq_len]
-            mask_tensor = torch.tensor(mask).to(device)
+            if step_idx > 0 and step_idx < self.scheduler.steps - 1:
+                mask = (
+                    self.scheduler.get_mask(step_idx, mask, current_sequence)
+                    .to(dtype=torch.bool)
+                    .squeeze()
+                )
+                mask = [True] * init_len + mask[init_len:max_seq_len].tolist()
+            elif step_idx == self.scheduler.steps - 1:
+                mask = [True] * max_seq_len
+            mask_tensor = torch.tensor(mask).unsqueeze(0).to(device)
             current_sequence[~mask_tensor] = vocab_size
             y, z, output_logits, q_stop = self.model.deep_recursion(
-                current_sequence.unsqueeze(0), y, z
+                current_sequence, y, z
             )
 
             current_sequence = sample_sequence(
@@ -161,14 +179,14 @@ class TrdlmEngine:
 
             row_states.append(
                 SeqState(
-                    current_tokens=current_sequence.tolist(),
+                    current_tokens=current_sequence[0].tolist(),
                     current_mask=mask,
                     current_step=step_idx + 1,
                     completed=True if step_idx == self.scheduler.steps - 1 else False,
                 )
             )
 
-            yield current_sequence.tolist(), torch.tensor(mask).to(
+            yield current_sequence[0].tolist(), torch.tensor(mask).to(
                 dtype=torch.int
             ).tolist()
 
@@ -191,15 +209,25 @@ class TrdlmEngine:
         results = [tokens.copy() for _ in range(num_samples)]
         masks = [[0] * len(tokens) for _ in range(num_samples)]
         completed = [False] * num_samples
-        for token_column, token_masks in self.generate(tokens, num_samples, **kwargs):
-            for i, (token, mask) in enumerate(zip(token_column, token_masks)):
-                if not completed[i]:
-                    if token == assistant_end or token == bos:
-                        completed[i] = True
+
+        for sample_idx in range(num_samples):
+            for gen_tokens, gen_mask in self.generate(tokens, **kwargs):
+                if completed[sample_idx]:
+                    break
+                # Check for terminal tokens
+                if (
+                    assistant_end in gen_tokens[len(tokens) :]
+                    or bos in gen_tokens[len(tokens) :]
+                ):
+                    if assistant_end in gen_tokens[len(tokens) :]:
+                        term_idx = gen_tokens.index(assistant_end)
                     else:
-                        results[i].append(token)
-                        masks[i].append(mask)
-            # Stop if all rows are completed
-            if all(completed):
-                break
+                        term_idx = gen_tokens.index(bos)
+                    results[sample_idx] = gen_tokens[:term_idx]
+                    masks[sample_idx] = gen_mask[:term_idx]
+                    completed[sample_idx] = True
+                else:
+                    results[sample_idx] = gen_tokens
+                    masks[sample_idx] = gen_mask
+
         return results, masks

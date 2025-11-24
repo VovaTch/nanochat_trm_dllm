@@ -25,6 +25,7 @@ from contextlib import nullcontext
 
 import wandb
 import torch
+from torch.utils.tensorboard import SummaryWriter
 
 import torch.distributed as dist
 
@@ -46,6 +47,7 @@ from scripts.base_eval import evaluate_model
 from nanochat.report import get_report
 
 print_banner()
+writer = SummaryWriter()  # TensorBoard writer
 
 # -----------------------------------------------------------------------------
 # User settings
@@ -53,7 +55,7 @@ run = "dummy"  # wandb run name default ("dummy" is special - we won't log to wa
 # Runtime
 device_type = ""  # cuda|cpu|mps (empty => autodetect good device type default, in order: CUDA > MPS > CPU)
 # Model architecture
-hidden_dim = 512
+hidden_dim = 768
 supervision_steps = 8
 max_seq_len = 1024  # max context length
 num_heads = 8
@@ -68,8 +70,8 @@ target_flops = (
 )  # calculate num_iterations to reach target_flops. Useful for scaling laws experiments (-1 = disable)
 target_param_data_ratio = 20  # calculate num_iterations to maintain fixed data:param ratio (Chinchilla=20) (-1 = disable)
 # Optimization
-device_batch_size = 8  # per-device batch size (set to not OOM)
-total_batch_size = 65536 * 2  # total desired batch size, in #tokens
+device_batch_size = 4  # per-device batch size (set to not OOM)
+total_batch_size = 262144  # total desired batch size, in #tokens
 embedding_lr = 0.2  # learning rate for the embedding parameters (Adam)
 unembedding_lr = 0.004  # learning rate for the unembedding parameters (Adam)
 weight_decay = 0.0  # weight decay for the embedding/unembedding parameters (Adam)
@@ -83,10 +85,10 @@ final_lr_frac = 0.0  # final LR is this fraction of the initial LR
 eval_every = 256  # every how many steps to evaluate the model for val bpb
 eval_tokens = 20 * 524288  # number of tokens to evaluate val loss on
 core_metric_every = (
-    2000  # every how many steps to evaluate the core metric (-1 = disable)
+    0  # every how many steps to evaluate the core metric (-1 = disable), was 2000
 )
 core_metric_max_per_task = 500  # examples per task in estimating the core metric
-sample_every = 2000  # every how many steps to sample from the model
+sample_every = 256  # every how many steps to sample from the model, was 2000
 # Output
 model_tag = (
     ""  # optionally override the model tag for the output checkpoint directory name
@@ -309,7 +311,11 @@ for step in range(num_iterations + 1):
     # once in a while: sample from the model (only on master process)
     # use the original uncompiled model because the inputs keep changing shape
     # print0(f"Master process? {master_process}, step {step}")
-    if master_process and (last_step or (step > 0 and step % sample_every == 0)):
+    if (
+        sample_every != 0
+        and master_process
+        and (last_step or (step > 0 and step % sample_every == 0))
+    ):
         model.eval()  # type: ignore
         prompts = [
             "The capital of France is",
@@ -323,13 +329,15 @@ for step in range(num_iterations + 1):
         engine = TrdlmEngine(
             orig_model, tokenizer, scheduler=sample_scheduler, max_seq_len=max_seq_len
         )  # use orig_model to avoid recompilation
-        for prompt in prompts:
+        for p_idx, prompt in enumerate(prompts):
             tokens = tokenizer(prompt, prepend="<|bos|>")
             with autocast_ctx:
                 sample, _ = engine.generate_batch(
                     tokens, num_samples=1, max_tokens=16, temperature=0
                 )
-            print0(tokenizer.decode(sample[0]))
+            decoded_text = tokenizer.decode(sample[0])
+            print0(decoded_text)
+            writer.add_text(f"Sample {p_idx}", decoded_text, step)
         model.train()  # type: ignore
 
     # save checkpoint at the end of the run (only on master process)
@@ -379,7 +387,7 @@ for step in range(num_iterations + 1):
         mask = ber_dist.sample().to(dtype=torch.bool)
         accum_x_mask.append(mask)
         x[~mask] = vocab_size
-        accum_x.append(x)
+        accum_x.append(x.clone())
 
         x, y = next(train_loader)
 
@@ -405,7 +413,8 @@ for step in range(num_iterations + 1):
         muon_momentum = get_muon_momentum(step)
         for group in muon_optimizer.param_groups:
             group["momentum"] = muon_momentum
-        dist.barrier()
+        if ddp_world_size > 1:
+            dist.barrier()
         for opt in optimizers:
             opt.step()
         model.zero_grad(set_to_none=True)
@@ -433,7 +442,15 @@ for step in range(num_iterations + 1):
     print0(
         f"step {step:05d}/{num_iterations:05d} ({pct_done:.2f}%) | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.2f} | total time: {total_training_time/60:.2f}m"
     )
-    if step % 100 == 0:
+    if step % 10 == 0:
+        writer.add_scalar("step", step)
+        writer.add_scalar("total_training_flops", flops_so_far, step)
+        writer.add_scalar("total_training_time", total_training_time, step)
+        writer.add_scalar("train/loss", debiased_smooth_loss, step)
+        writer.add_scalar("train/lrm", lrm, step)
+        writer.add_scalar("train/dt", dt, step)
+        writer.add_scalar("train/tok_per_sec", tok_per_sec, step)
+        writer.add_scalar("train/mfu", mfu, step)
         wandb_run.log(
             {
                 "step": step,
@@ -481,5 +498,6 @@ get_report().log(
 )
 
 # cleanup
+writer.close()
 wandb_run.finish()  # wandb run finish
 compute_cleanup()
