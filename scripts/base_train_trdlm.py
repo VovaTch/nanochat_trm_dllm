@@ -42,7 +42,6 @@ from nanochat.common import (
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
 from nanochat.checkpoint_manager import save_checkpoint
 from nanochat.loss_eval import evaluate_trdlm_loss_bpb
-from nanochat.engine import Engine
 from scripts.base_eval import evaluate_model
 from nanochat.report import get_report
 
@@ -383,18 +382,29 @@ for step in range(num_iterations + 1):
         )
 
         mask_ber = torch.ones_like(x) * random.random()
-        ber_dist = torch.distributions.Bernoulli(mask_ber)
-        mask = ber_dist.sample().to(dtype=torch.bool)
-        accum_x_mask.append(mask)
+        # ber_dist = torch.distributions.Bernoulli(mask_ber)
+        # mask = ber_dist.sample().to(dtype=torch.bool)
+        rand_t = torch.rand_like(x, dtype=torch.float32)
+        rand_idx = torch.argsort(rand_t, dim=1)
+        accum_x_mask.append(rand_idx)
+        mask = torch.ones_like(x, dtype=torch.bool)
         x[~mask] = vocab_size
         accum_x.append(x.clone())
 
         x, y = next(train_loader)
 
     for _ in range(supervision_steps):
+        running_idx = 0
         for x_ind, y_ind, z_ind, mask, target in zip(
             accum_x, accum_y_inner, accum_z_inner, accum_x_mask, accum_target
         ):
+            mask_ind = torch.zeros_like(x_ind, dtype=torch.bool)
+            sub_rand_idx = rand_idx[:, : int(running_idx / supervision_steps * x_ind.shape[1])]  # type: ignore
+
+            for idx, sub_rand_idx_row in enumerate(sub_rand_idx):
+                mask_ind[idx, sub_rand_idx_row] = True
+            x_ind[~mask_ind] = vocab_size
+
             # with autocast_ctx:
             y_ind, z_int, output, q_stop = model.deep_recursion(x_ind, y_ind, z_ind)
             loss = model.get_loss(output, q_stop, mask, target)

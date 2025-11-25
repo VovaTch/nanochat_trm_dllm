@@ -346,11 +346,14 @@ class TRDLM(nn.Module):
         q_stop: torch.Tensor,
         mask: torch.Tensor,
         target: torch.Tensor,
-        reduction: str = "mean",
+        reduction: str = "sum",
     ) -> torch.Tensor:
 
-        loss_cls = F.cross_entropy(
-            output[~mask], target[~mask].long(), reduction=reduction
+        divider = 1 / mask.numel() if reduction == "mean" else 1.0
+
+        loss_cls = (
+            F.cross_entropy(output[~mask], target[~mask].long(), reduction=reduction)
+            * divider
         )
         q_target_collector = []
         for i in range(output.shape[0]):
