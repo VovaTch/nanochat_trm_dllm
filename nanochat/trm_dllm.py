@@ -349,7 +349,7 @@ class TRDLM(nn.Module):
         reduction: str = "sum",
     ) -> torch.Tensor:
 
-        divider = 1 / mask.numel() if reduction == "mean" else 1.0
+        divider = 1 / mask.numel() if reduction == "sum" else 1.0
 
         loss_cls = (
             F.cross_entropy(output[~mask], target[~mask].long(), reduction=reduction)

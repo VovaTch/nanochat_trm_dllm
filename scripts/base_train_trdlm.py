@@ -393,21 +393,21 @@ for step in range(num_iterations + 1):
 
         x, y = next(train_loader)
 
-    for _ in range(supervision_steps):
-        running_idx = 0
+    for running_idx in range(supervision_steps):
         for x_ind, y_ind, z_ind, mask, target in zip(
             accum_x, accum_y_inner, accum_z_inner, accum_x_mask, accum_target
         ):
+            input = x_ind.clone()
             mask_ind = torch.zeros_like(x_ind, dtype=torch.bool)
-            sub_rand_idx = rand_idx[:, : int(running_idx / supervision_steps * x_ind.shape[1])]  # type: ignore
+            sub_rand_idx = mask[:, : int(running_idx / supervision_steps * x_ind.shape[1])]  # type: ignore
 
             for idx, sub_rand_idx_row in enumerate(sub_rand_idx):
                 mask_ind[idx, sub_rand_idx_row] = True
-            x_ind[~mask_ind] = vocab_size
+            input[~mask_ind] = vocab_size
 
             # with autocast_ctx:
-            y_ind, z_int, output, q_stop = model.deep_recursion(x_ind, y_ind, z_ind)
-            loss = model.get_loss(output, q_stop, mask, target)
+            y_ind, z_int, output, q_stop = model.deep_recursion(input, y_ind, z_ind)
+            loss = model.get_loss(output, q_stop, mask_ind, target)
             train_loss = loss.clone().detach()
             loss /= grad_accum_steps
             loss.backward()
